@@ -5,14 +5,17 @@ import (
 	"flag"
 	"fmt"
 	"log"
-	"net/http"
+	"net"
 	"time"
 
+	"github.com/zhas-off/movie-service-2/gen"
 	"github.com/zhas-off/movie-service-2/metadata/internal/controller/metadata"
-	httphandler "github.com/zhas-off/movie-service-2/metadata/internal/handler/http"
+	grpchandler "github.com/zhas-off/movie-service-2/metadata/internal/handler/grpc"
 	"github.com/zhas-off/movie-service-2/metadata/internal/repository/memory"
 	"github.com/zhas-off/movie-service-2/pkg/discovery"
 	"github.com/zhas-off/movie-service-2/pkg/discovery/consul"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/reflection"
 )
 
 const serviceName = "metadata"
@@ -42,9 +45,15 @@ func main() {
 	defer registry.Deregister(ctx, instanceID, serviceName)
 	repo := memory.New()
 	ctrl := metadata.New(repo)
-	h := httphandler.New(ctrl)
-	http.Handle("/metadata", http.HandlerFunc(h.GetMetadata))
-	if err := http.ListenAndServe(fmt.Sprintf(":%d", port), nil); err != nil {
+	h := grpchandler.New(ctrl)
+	lis, err := net.Listen("tcp", fmt.Sprintf("localhost:%v", port))
+	if err != nil {
+		log.Fatalf("failed to listen: %v", err)
+	}
+	srv := grpc.NewServer()
+	reflection.Register(srv)
+	gen.RegisterMetadataServiceServer(srv, h)
+	if err := srv.Serve(lis); err != nil {
 		panic(err)
 	}
 }
