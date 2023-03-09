@@ -3,6 +3,7 @@ module github.com/zhas-off/movie-service-2
 go 1.19
 
 require (
+	github.com/confluentinc/confluent-kafka-go v1.9.2
 	github.com/hashicorp/consul/api v1.19.1
 	google.golang.org/grpc v1.53.0
 	google.golang.org/protobuf v1.28.1

@@ -16,14 +16,19 @@ type ratingRepository interface {
 	Put(ctx context.Context, recordID model.RecordID, recordType model.RecordType, rating *model.Rating) error
 }
 
+type ratingIngester interface {
+	Ingest(ctx context.Context) (chan model.RatingEvent, error)
+}
+
 // Controller defines a rating service controller.
 type Controller struct {
-	repo ratingRepository
+	repo     ratingRepository
+	ingester ratingIngester
 }
 
 // New creates a rating service controller.
-func New(repo ratingRepository) *Controller {
-	return &Controller{repo}
+func New(repo ratingRepository, ingester ratingIngester) *Controller {
+	return &Controller{repo, ingester}
 }
 
 // GetAggregatedRating returns the aggregated rating for a record or ErrNotFound if there are no ratings for it.
@@ -44,4 +49,18 @@ func (c *Controller) GetAggregatedRating(ctx context.Context, recordID model.Rec
 // PutRating writes a rating for a given record.
 func (c *Controller) PutRating(ctx context.Context, recordID model.RecordID, recordType model.RecordType, rating *model.Rating) error {
 	return c.repo.Put(ctx, recordID, recordType, rating)
+}
+
+// StartIngestion starts the ingestion of rating events.
+func (s *Controller) StartIngestion(ctx context.Context) error {
+	ch, err := s.ingester.Ingest(ctx)
+	if err != nil {
+		return err
+	}
+	for e := range ch {
+		if err := s.PutRating(ctx, e.RecordID, e.RecordType, &model.Rating{UserID: e.UserID, Value: e.Value}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
