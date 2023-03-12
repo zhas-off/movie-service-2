@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
 	"net"
 	"os"
 	"time"
@@ -14,6 +13,11 @@ import (
 	"github.com/zhas-off/movie-service-2/metadata/internal/repository/memory"
 	"github.com/zhas-off/movie-service-2/pkg/discovery"
 	"github.com/zhas-off/movie-service-2/pkg/discovery/consul"
+	"github.com/zhas-off/movie-service-2/pkg/tracing"
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
+	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
 	"gopkg.in/yaml.v2"
@@ -22,21 +26,40 @@ import (
 const serviceName = "metadata"
 
 func main() {
-	f, err := os.Open("base.yaml")
+	logger, _ := zap.NewProduction()
+	defer logger.Sync()
+
+	f, err := os.Open("../configs/base.yaml")
 	if err != nil {
-		panic(err)
+		logger.Fatal("Failed to open configuration", zap.Error(err))
 	}
 	var cfg config
 	if err := yaml.NewDecoder(f).Decode(&cfg); err != nil {
-		panic(err)
+		logger.Fatal("Failed to parse configuration", zap.Error(err))
 	}
 	port := cfg.API.Port
-	log.Printf("Starting the metadata service on port %d", port)
+
+	logger.Info("Starting the metadata service", zap.Int("port", port))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	tp, err := tracing.NewJaegerProvider(cfg.Jaeger.URL, serviceName)
+	if err != nil {
+		logger.Fatal("Failed to initialize Jaeger provider", zap.Error(err))
+	}
+	defer func() {
+		if err := tp.Shutdown(ctx); err != nil {
+			logger.Fatal("Failed to shut down Jaeger prodiver", zap.Error(err))
+		}
+	}()
+	otel.SetTracerProvider(tp)
+	otel.SetTextMapPropagator(propagation.TraceContext{})
+
 	registry, err := consul.NewRegistry("localhost:8500")
 	if err != nil {
 		panic(err)
 	}
-	ctx := context.Background()
 	instanceID := discovery.GenerateInstanceID(serviceName)
 	if err := registry.Register(ctx, instanceID, serviceName, fmt.Sprintf("localhost:%d", port)); err != nil {
 		panic(err)
@@ -44,7 +67,7 @@ func main() {
 	go func() {
 		for {
 			if err := registry.ReportHealthyState(instanceID, serviceName); err != nil {
-				log.Println("Failed to report healthy state: " + err.Error())
+				logger.Error("Failed to report healthy state", zap.Error(err))
 			}
 			time.Sleep(1 * time.Second)
 		}
@@ -55,9 +78,9 @@ func main() {
 	h := grpchandler.New(ctrl)
 	lis, err := net.Listen("tcp", fmt.Sprintf("localhost:%v", port))
 	if err != nil {
-		log.Fatalf("failed to listen: %v", err)
+		logger.Fatal("Failed to listen", zap.Error(err))
 	}
-	srv := grpc.NewServer()
+	srv := grpc.NewServer(grpc.UnaryInterceptor(otelgrpc.UnaryServerInterceptor()))
 	reflection.Register(srv)
 	gen.RegisterMetadataServiceServer(srv, h)
 	if err := srv.Serve(lis); err != nil {
