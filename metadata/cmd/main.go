@@ -4,9 +4,12 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"time"
 
+	"github.com/uber-go/tally"
+	"github.com/uber-go/tally/prometheus"
 	"github.com/zhas-off/movie-service-2/gen"
 	"github.com/zhas-off/movie-service-2/metadata/internal/controller/metadata"
 	grpchandler "github.com/zhas-off/movie-service-2/metadata/internal/handler/grpc"
@@ -55,6 +58,24 @@ func main() {
 	}()
 	otel.SetTracerProvider(tp)
 	otel.SetTextMapPropagator(propagation.TraceContext{})
+
+	reporter := prometheus.NewReporter(prometheus.Options{})
+	scope, closer := tally.NewRootScope(tally.ScopeOptions{
+		Tags:           map[string]string{"service": "metadata"},
+		CachedReporter: reporter,
+	}, 10*time.Second)
+	defer closer.Close()
+	http.Handle("/metrics", reporter.HTTPHandler())
+	go func() {
+		if err := http.ListenAndServe(fmt.Sprintf(":%d", cfg.Prometheus.MetricsPort), nil); err != nil {
+			logger.Fatal("Failed to start the metrics handler", zap.Error(err))
+		}
+	}()
+
+	counter := scope.Tagged(map[string]string{
+		"service": "metadata",
+	}).Counter("service_started")
+	counter.Inc(1)
 
 	registry, err := consul.NewRegistry("localhost:8500")
 	if err != nil {
